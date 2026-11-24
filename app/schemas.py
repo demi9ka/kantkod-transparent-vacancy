@@ -44,9 +44,12 @@ class Issue(BaseModel):
         return self
 
 
+MAX_ISSUES = 4
+
+
 class Analysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    issues: list[Issue] = Field(max_length=6)
+    issues: list[Issue] = Field(max_length=MAX_ISSUES)
 
 
 class VacancyReport(BaseModel):

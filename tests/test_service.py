@@ -9,7 +9,7 @@ from app.dependencies import get_report_service
 from app.errors import ServiceError
 from app.main import create_app
 from app.schemas import Analysis, SourceResponse
-from app.services.analyzer import VacancyAnalyzer, validate_analysis
+from app.services.analyzer import VacancyAnalyzer, normalize_vacancy, validate_analysis
 from app.services.reports import ReportService, ReportStore
 from app.services.source import VacancySource
 
@@ -35,12 +35,9 @@ def test_quotes_and_contradiction_validation():
     vacancy = {"schedule": "Гибкий график", "requirement": {"qualification": "09:00–18:00"}}
     result = validate_analysis(json.dumps({"issues": [issue()]}), vacancy)
     assert len(result.issues) == 1
-    with pytest.raises(ValueError):
-        validate_analysis(json.dumps({"issues": [issue(quote="Пятидневка")]}), vacancy)
-    with pytest.raises(ValueError):
-        validate_analysis(json.dumps({"issues": [issue(type="contradiction")]}), vacancy)
-    with pytest.raises(ValueError):
-        validate_analysis(json.dumps({"issues": [issue(source_field="invented")]}), vacancy)
+    assert validate_analysis(json.dumps({"issues": [issue(quote="Пятидневка")]}), vacancy).issues == []
+    assert validate_analysis(json.dumps({"issues": [issue(type="contradiction")]}), vacancy).issues == []
+    assert validate_analysis(json.dumps({"issues": [issue(source_field="invented")]}), vacancy).issues == []
     result = validate_analysis(json.dumps({"issues": [issue(
         type="contradiction", second_field="requirement.qualification", second_quote="09:00–18:00"
     )]}), vacancy)
@@ -49,28 +46,98 @@ def test_quotes_and_contradiction_validation():
 
 def test_numeric_and_address_evidence():
     vacancy = {"salary_min": 35000, "addresses": {"address": [{"location": "г. Гусев"}]}}
-    for field in ("addresses.address[].location", "addresses.address[0].location"):
-        result = validate_analysis(json.dumps({"issues": [issue(
-            source_field=field, quote="г. Гусев", topic="workplace"
-        )]}), vacancy)
-        assert len(result.issues) == 1
+    result = validate_analysis(json.dumps({"issues": [issue(
+        source_field="addresses", quote="г. Гусев", topic="workplace"
+    )]}), vacancy)
+    assert len(result.issues) == 1
     validate_analysis(json.dumps({"issues": [issue(source_field="salary_min", quote="35000", topic="salary")]}), vacancy)
 
 
-def test_analyzer_retries_invalid_output():
+def test_analyzer_keeps_valid_issues_and_logs_invalid_ones(caplog):
     client = Mock()
-    client.complete.side_effect = ['{"issues":[{"bad":true}]}', '{"issues":[]}']
+    client.complete.return_value = json.dumps({"issues": [
+        {"bad": True}, issue(), issue(quote="Выдуманная цитата"),
+        issue(type="contradiction"), issue(source_field="invented"),
+    ]})
     analyzer = VacancyAnalyzer(client, "prompt")
-    assert analyzer.analyze({"id": "1"}).issues == []
-    assert client.complete.call_count == 2
-    assert client.complete.call_args.kwargs["correction"] is True
+    result = analyzer.analyze({"id": "VAC-1", "schedule": "Гибкий график"})
+    assert len(result.issues) == 1
+    assert result.issues[0].quote == "Гибкий график"
+    assert client.complete.call_count == 1
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 4
+    assert all("VAC-1" in r.message and "отброшено" in r.message for r in warnings)
+    assert "Цитата" in warnings[1].message
 
 
-def test_bad_model_output_never_becomes_empty_success():
+@pytest.mark.parametrize("content", [
+    'not-json', '{"issues":', '[]', 'null', '{"issues":null}', '{}',
+    '{"issues":[],"extra":true}', '{"issues": [{"bad": true}]}',
+])
+def test_bad_model_output_logged_and_skipped(content, caplog):
     client = Mock()
-    client.complete.return_value = '{"issues": [{"bad": true}]}'
-    with pytest.raises(ServiceError):
-        VacancyAnalyzer(client, "prompt").analyze({"id": "1"})
+    client.complete.return_value = content
+    assert VacancyAnalyzer(client, "prompt").analyze({"id": "VAC-2"}).issues == []
+    assert "VAC-2" in caplog.text
+    assert "WARNING" in caplog.text
+    client.complete.assert_called_once()
+
+
+def test_duplicates_and_excess_issues_are_skipped(caplog):
+    vacancy = {"id": "VAC-3", "duty": "; ".join(f"Задача {n}" for n in range(8))}
+    issues = [issue(source_field="duty", topic="duties", quote=f"Задача {n}") for n in range(8)]
+    result = validate_analysis(json.dumps({"issues": [{"bad": True}, issues[0], *issues]}), vacancy)
+    assert [i.quote for i in result.issues] == [f"Задача {n}" for n in range(4)]
+    assert "Повтор замечания" in caplog.text
+    assert "Превышен лимит" in caplog.text
+
+
+def test_validation_errors_do_not_stop_report_processing(config, caplog):
+    client = Mock()
+    client.complete.side_effect = [
+        'invalid json',
+        json.dumps({"issues": [{"bad": True}, issue()]}),
+        '{"issues":[]}',
+    ]
+    service = ReportService(
+        config, Mock(), VacancyAnalyzer(client, "prompt"), ReportStore(config.report_path)
+    )
+    report = service.run(payload(
+        {"id": "1"}, {"id": "2", "schedule": "Гибкий график"}, {"id": "3"}
+    ))
+    assert report.total == 3
+    assert [len(v.issues) for v in report.vacancies] == [0, 1, 0]
+    assert service.status()["state"] == "success"
+    assert service.store.read() == report
+    assert client.complete.call_count == 3
+
+
+def test_new_prompt_receives_flat_fields_and_original_text():
+    vacancy = {
+        "id": "FLAT-1", "job-name": "Оператор", "salary_min": 35000,
+        "requirement": {"experience": 0, "qualification": "Обучение предоставляется."},
+        "addresses": {"address": [{"location": "г. Гусев"}, {"location": "г. Советск"}]},
+    }
+    normalized = normalize_vacancy(vacancy)
+    assert normalized["requirement.experience"] == "0"
+    assert normalized["requirement.qualification"] == "Обучение предоставляется."
+    assert normalized["salary_min"] == "35000"
+    assert normalized["schedule"] is None
+    assert normalized["addresses"] == "г. Гусев\nг. Советск"
+    assert "id" not in normalized
+    assert normalize_vacancy(normalized) == normalized
+    client = Mock()
+    client.complete.return_value = json.dumps({"issues": [issue(
+        topic="requirements", source_field="requirement.qualification", quote="Обучение предоставляется."
+    )]})
+    assert len(VacancyAnalyzer(client, "новый промпт").analyze(vacancy).issues) == 1
+    client.complete.assert_called_once_with("новый промпт", normalized)
+
+
+def test_shortened_and_old_address_field_names_are_rejected():
+    vacancy = {"id": "FLAT-2", "requirement": {"qualification": "Текст"}, "addresses": {"address": [{"location": "Гусев"}]}}
+    for field, quote in [("qualification", "Текст"), ("addresses.address[0].location", "Гусев")]:
+        assert validate_analysis(json.dumps({"issues": [issue(source_field=field, quote=quote)]}), vacancy).issues == []
 
 
 def test_deduplication_and_previous_report_preserved(config):
