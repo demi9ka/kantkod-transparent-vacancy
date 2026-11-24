@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.errors import ServiceError
 from app.main import build_service
+from app.logging_config import configure_logging
 from app.schemas import SourceResponse
 
 
@@ -18,6 +20,7 @@ def main() -> int:
     service = client = None
     try:
         config = Settings()
+        configure_logging(config)
         if args.output:
             config.report_path = args.output.resolve()
         payload = SourceResponse.model_validate_json(args.input.read_text(encoding="utf-8")) if args.input else None
@@ -27,6 +30,7 @@ def main() -> int:
         return 0
     except (ServiceError, OSError, ValidationError) as exc:
         message = "Некорректная конфигурация или формат входного JSON" if isinstance(exc, ValidationError) else str(exc)
+        logging.getLogger(__name__).error("Запуск CLI завершился ошибкой: %s", message)
         print(f"Ошибка: {message}", file=sys.stderr)
         return 1
     finally:

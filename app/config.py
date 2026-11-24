@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Kaliningrad"
     report_path: Path = ROOT / "reports/latest.json"
     prompt_path: Path = ROOT / "system_prompt.txt"
+    log_file: Path = ROOT / "logs/app.log"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "DEBUG"
+    log_console_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     @model_validator(mode="after")
     def validate_schedule(self):
@@ -35,4 +39,6 @@ class Settings(BaseSettings):
         CronTrigger.from_crontab(self.schedule_cron, timezone=self.timezone)
         if not self.report_path.is_absolute():
             self.report_path = ROOT / self.report_path
+        if not self.log_file.is_absolute():
+            self.log_file = ROOT / self.log_file
         return self

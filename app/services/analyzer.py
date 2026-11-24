@@ -63,6 +63,7 @@ def validate_analysis(content: str, vacancy: dict[str, Any]) -> Analysis:
     # Допускается только одна JSON-конструкция, опционально обёрнутая в markdown.
     vacancy_id = vacancy.get("id", "unknown")
     normalized = normalize_vacancy(vacancy)
+    logger.debug("Вакансия %s: ответ ИИ для проверки: %s", vacancy_id, content)
     try:
         if not isinstance(content, str):
             raise ValueError("Ответ модели должен быть текстом JSON")
@@ -80,6 +81,10 @@ def validate_analysis(content: str, vacancy: dict[str, Any]) -> Analysis:
     issues = []
     seen = set()
     for index, raw_issue in enumerate(data["issues"], start=1):
+        logger.debug(
+            "Вакансия %s: замечание #%s до валидации: %s",
+            vacancy_id, index, json.dumps(raw_issue, ensure_ascii=False),
+        )
         try:
             issue = Issue.model_validate(raw_issue)
             for path, quote in [(issue.source_field, issue.quote), (issue.second_field, issue.second_quote)]:
@@ -88,7 +93,12 @@ def validate_analysis(content: str, vacancy: dict[str, Any]) -> Analysis:
                 if path not in FIELDS:
                     raise ValueError(f"Неизвестное поле {path!r}")
                 values = field_values(normalized, path)
-                if quote and not any(quote in value for value in values):
+                matches = not quote or any(quote in value for value in values)
+                logger.debug(
+                    "Вакансия %s: замечание #%s; поле=%s; цитата ИИ=%r; исходные значения=%r; совпадение=%s",
+                    vacancy_id, index, path, quote, values, matches,
+                )
+                if not matches:
                     raise ValueError(f"Цитата {quote!r} отсутствует в поле {path!r}")
             fingerprint = (issue.type, issue.topic, issue.source_field, issue.quote, issue.second_field, issue.second_quote)
             if fingerprint in seen:
@@ -102,6 +112,11 @@ def validate_analysis(content: str, vacancy: dict[str, Any]) -> Analysis:
             continue
         seen.add(fingerprint)
         issues.append(issue)
+        logger.debug("Вакансия %s: замечание #%s принято", vacancy_id, index)
+    logger.info(
+        "Вакансия %s: принято замечаний=%s, отброшено=%s",
+        vacancy_id, len(issues), len(data["issues"]) - len(issues),
+    )
     return Analysis(issues=issues)
 
 
@@ -111,8 +126,14 @@ class VacancyAnalyzer:
         self.prompt = prompt
 
     def analyze(self, vacancy: dict[str, Any]) -> Analysis:
+        vacancy_id = vacancy.get("id", "unknown")
+        normalized = normalize_vacancy(vacancy)
+        logger.info("Вакансия %s: начало анализа", vacancy_id)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Вакансия %s: исходные данные: %s", vacancy_id, json.dumps(vacancy, ensure_ascii=False, indent=2))
+            logger.debug("Вакансия %s: данные для ИИ: %s", vacancy_id, json.dumps(normalized, ensure_ascii=False, indent=2))
         try:
-            content = self.client.complete(self.prompt, normalize_vacancy(vacancy))
+            content = self.client.complete(self.prompt, normalized)
         except (ModelResponseError, ValidationError) as exc:
             details = validation_details(exc) if isinstance(exc, ValidationError) else str(exc)
             logger.warning("Вакансия %s: ответ модели отброшен: %s", vacancy.get("id", "unknown"), details)

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import Settings
 from app.errors import ServiceError
+from app.logging_config import configure_logging
 from app.routers import gigachat, reports
 from app.services.analyzer import VacancyAnalyzer
 from app.services.gigachat import GigaChatClient
@@ -25,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         config = settings or Settings()
+        configure_logging(config)
         service, client = build_service(config)
         app.state.report_service = service
         app.state.gigachat_client = client

@@ -65,10 +65,12 @@ class ReportService:
         if not self._run_lock.acquire(blocking=False):
             raise ServiceError("Другой анализ уже выполняется", status_code=409)
         self._update(state="running", started_at=datetime.now(timezone.utc), finished_at=None, processed=0, error=None)
+        logger.info("Начат запуск анализа: источник=%s", self.settings.source_url if payload is None else source_label)
         try:
             vacancies = self.source.fetch() if payload is None else extract_vacancies(payload)
             # Одна запись на ID. При повторе внутри входа используется последняя версия.
             unique = {str(vacancy["id"]): vacancy for vacancy in vacancies}
+            logger.info("Получено вакансий=%s, уникальных=%s", len(vacancies), len(unique))
             results = []
             for identifier, vacancy in unique.items():
                 analysis = self.analyzer.analyze(vacancy)
@@ -89,11 +91,14 @@ class ReportService:
             # Перезаписываем текущий отчёт только после полного успешного анализа.
             self.store.save(report)
             self._update(state="success", finished_at=datetime.now(timezone.utc))
+            logger.info("Запуск завершён: вакансий=%s, отчёт=%s", report.total, self.store.path)
             return report
         except ServiceError as exc:
+            logger.error("Запуск завершился ошибкой: %s", exc)
             self._update(state="error", error=str(exc), finished_at=datetime.now(timezone.utc))
             raise
         except Exception as exc:
+            logger.error("Внутренняя ошибка обработки: %s", type(exc).__name__)
             self._update(state="error", error="Внутренняя ошибка обработки", finished_at=datetime.now(timezone.utc))
             raise ServiceError("Внутренняя ошибка обработки; предыдущий отчёт сохранён", status_code=500) from exc
         finally:

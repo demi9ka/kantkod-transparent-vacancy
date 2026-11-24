@@ -8,3 +8,5 @@ reports/*.json
 .DS_Store
 token
 certs
+logs/
+info.docx

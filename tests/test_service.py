@@ -16,7 +16,10 @@ from app.services.source import VacancySource
 
 @pytest.fixture
 def config(tmp_path):
-    return Settings(_env_file=None, report_path=tmp_path / "latest.json", schedule_enabled=False)
+    return Settings(
+        _env_file=None, report_path=tmp_path / "latest.json", log_file=tmp_path / "app.log",
+        schedule_enabled=False,
+    )
 
 
 def payload(*vacancies):
