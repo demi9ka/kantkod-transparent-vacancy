@@ -1,0 +1,22 @@
+{
+  "created_at": "2026-11-24T12:00:00Z",
+  "source": "manual-format-example-not-an-ai-run",
+  "provider": "manual-example",
+  "model": "not-used",
+  "total": 1,
+  "vacancies": [
+    {
+      "id": "DEMO-39-002",
+      "issues": [
+        {
+          "type": "ambiguous",
+          "topic": "schedule",
+          "source_field": "schedule",
+          "quote": "Гибкий график",
+          "problem": "Не указаны дни и часы работы.",
+          "recommendation": "Уточнить дни недели, длительность смен и время начала и окончания работы."
+        }
+      ]
+    }
+  ]
+}
