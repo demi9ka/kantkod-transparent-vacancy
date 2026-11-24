@@ -5,5 +5,6 @@ __pycache__/
 *.pyc
 reports/*.json
 !reports/.gitkeep
-certs/
 .DS_Store
+token
+certs

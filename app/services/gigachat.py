@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from app.config import Settings
-from app.errors import ServiceError
+from app.errors import ModelResponseError, ServiceError
 from app.schemas import Analysis
 
 
@@ -39,7 +39,9 @@ class GigaChatClient:
             raise ServiceError("GigaChat недоступен или превышено время ожидания") from exc
 
     @staticmethod
-    def _json(response: requests.Response) -> dict[str, Any]:
+    def _json(
+        response: requests.Response, *, invalid_json_error: type[ServiceError] = ServiceError,
+    ) -> dict[str, Any]:
         if not response.ok:
             # Тело ответа не выводим: оно может содержать чувствительные данные.
             raise ServiceError(f"GigaChat вернул HTTP {response.status_code}")
@@ -49,7 +51,7 @@ class GigaChatClient:
                 raise ValueError
             return data
         except ValueError as exc:
-            raise ServiceError("GigaChat вернул некорректный JSON") from exc
+            raise invalid_json_error("GigaChat вернул некорректный JSON") from exc
 
     def _access_token(self) -> str:
         if self._token and time.time() < self._expires_at - 60:
@@ -93,7 +95,10 @@ class GigaChatClient:
                 if response.status_code == 401 and attempt == 0:
                     self._token = ""
                     continue
-                return self._json(response)
+                return self._json(
+                    response,
+                    invalid_json_error=ModelResponseError if path == "chat/completions" else ServiceError,
+                )
         raise ServiceError("Не удалось авторизоваться в GigaChat")
 
     def models(self) -> dict[str, Any]:
@@ -118,12 +123,17 @@ class GigaChatClient:
             },
         })
         try:
+            if not isinstance(data, dict):
+                raise ValueError("Ожидается объект ответа GigaChat")
             choice = data["choices"][0]
+            if not isinstance(choice, dict):
+                raise ValueError("Первый элемент choices должен быть объектом")
             if choice.get("finish_reason") not in (None, "stop"):
-                raise ValueError
+                raise ValueError(f"Генерация не завершена: finish_reason={choice.get('finish_reason')!r}")
             content = choice["message"]["content"]
             if not isinstance(content, str) or not content.strip():
-                raise ValueError
+                raise ValueError("Поле message.content должно содержать непустой текст")
             return content
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ServiceError("GigaChat не вернул полный текст анализа") from exc
+            reason = str(exc) if isinstance(exc, ValueError) else "Некорректная структура choices/message/content"
+            raise ModelResponseError(f"GigaChat не вернул полный текст анализа: {reason}") from exc

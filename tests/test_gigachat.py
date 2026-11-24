@@ -2,9 +2,11 @@ import time
 import uuid
 from unittest.mock import Mock
 
+import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
+from app.errors import ModelResponseError, ServiceError
 from app.services.gigachat import GigaChatClient
 
 
@@ -50,3 +52,21 @@ def test_completion_sends_prompt_and_vacancy():
     assert output["type"] == "json_schema"
     assert output["strict"] is True
     assert "problem" in output["schema"]["$defs"]["Issue"]["required"]
+
+
+def test_invalid_completion_json_is_distinct_from_transport_error():
+    client = GigaChatClient(Settings(_env_file=None))
+    client._token = "test-token"
+    client._expires_at = time.time() + 1800
+    client.session = Mock()
+    invalid = Mock(ok=True)
+    invalid.json.side_effect = ValueError("not JSON")
+    client.session.request.return_value = invalid
+    with pytest.raises(ModelResponseError):
+        client.complete("prompt", {"id": "1"})
+    # Ошибки HTTP и авторизации не считаются ошибками содержания замечаний.
+    client.session.request.return_value = response({}, status=403)
+    with pytest.raises(ServiceError) as error:
+        client.complete("prompt", {"id": "1"})
+    assert not isinstance(error.value, ModelResponseError)
+    assert "403" in str(error.value)

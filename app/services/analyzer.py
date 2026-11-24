@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.errors import ModelResponseError
 from app.schemas import MAX_ISSUES, Analysis, Issue
 from app.services.gigachat import GigaChatClient
 
@@ -60,13 +61,15 @@ def normalize_vacancy(vacancy: dict[str, Any]) -> dict[str, str | None]:
 
 def validate_analysis(content: str, vacancy: dict[str, Any]) -> Analysis:
     # Допускается только одна JSON-конструкция, опционально обёрнутая в markdown.
-    content = content.strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content)
-        content = re.sub(r"\s*```$", "", content)
     vacancy_id = vacancy.get("id", "unknown")
     normalized = normalize_vacancy(vacancy)
     try:
+        if not isinstance(content, str):
+            raise ValueError("Ответ модели должен быть текстом JSON")
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
         data = json.loads(content)
         if not isinstance(data, dict) or set(data) != {"issues"} or not isinstance(data["issues"], list):
             raise ValueError('Ожидается объект {"issues": [...]} без дополнительных полей')
@@ -108,5 +111,10 @@ class VacancyAnalyzer:
         self.prompt = prompt
 
     def analyze(self, vacancy: dict[str, Any]) -> Analysis:
-        content = self.client.complete(self.prompt, normalize_vacancy(vacancy))
+        try:
+            content = self.client.complete(self.prompt, normalize_vacancy(vacancy))
+        except (ModelResponseError, ValidationError) as exc:
+            details = validation_details(exc) if isinstance(exc, ValidationError) else str(exc)
+            logger.warning("Вакансия %s: ответ модели отброшен: %s", vacancy.get("id", "unknown"), details)
+            return Analysis(issues=[])
         return validate_analysis(content, vacancy)

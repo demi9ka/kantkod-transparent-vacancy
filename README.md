@@ -4,12 +4,137 @@
 находит неясные условия с помощью GigaChat и сохраняет JSON-отчёт для редактора.
 Локальный проверочный режим использует тот же анализатор и не обращается к порталу.
 
-Текущий статус: 24 изолированных теста проходят, загрузка нескольких страниц
-реального портала и получение списка моделей GigaChat проверены. Полный прогон
-10 учебных вакансий пока не подтверждён: встречались некорректные ответы модели
-и разрывы TLS-соединения с OAuth. Некорректные замечания теперь пропускаются
-с предупреждением в логах; обработка остальных продолжается. Добавлена строгая JSON-схема;
-после изменений требуется повторная сквозная проверка. Локально выбрана `GigaChat-3-Pro`.
+## Подготовка к запуску
+
+### 1. Python и зависимости
+
+Установите Python 3.11–3.14 и откройте терминал в папке проекта.
+Активация виртуального окружения не обязательна: команды ниже используют его Python напрямую.
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+Windows (PowerShell или CMD):
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env
+```
+
+Если `.env` уже заполнен, сохраните его: повторное копирование шаблона не требуется.
+На Linux при отсутствии `venv` установите пакет `python3-venv` средствами своего дистрибутива.
+
+### 2. Ключ GigaChat
+
+Впишите в `.env` `GIGACHAT_AUTH_KEY`: готовый ключ авторизации из кабинета GigaChat API,
+без `< >` и префикса `Basic`. Это не краткоживущий Access token.
+Ключ не нужно повторно кодировать в Base64. `.env` исключён из Git.
+Провайдер — GigaChat, модель по умолчанию — `GigaChat-2`; другую доступную модель
+можно выбрать через `GIGACHAT_MODEL` после запроса `/models`.
+
+### 3. Сертификаты GigaChat
+
+До первого обращения к GigaChat подготовьте доверенные сертификаты.
+
+macOS / Linux:
+
+```bash
+.venv/bin/python scripts/setup_certificates.py
+```
+
+Windows (PowerShell или CMD):
+
+```powershell
+.venv\Scripts\python.exe scripts/setup_certificates.py
+```
+
+Скрипт создаст `certs/gigachat-ca.pem` и выведет строку
+`GIGACHAT_CA_BUNDLE=...` с полным путём. Скопируйте её в `.env`, заменив пустое
+значение `GIGACHAT_CA_BUNDLE`. Путь формируется для текущего компьютера:
+при переносе проекта выполните этот шаг заново.
+
+Сертификат скачивается с Госуслуг по HTTPS и объединяется с доверенной цепочкой
+certifi. Системное хранилище не меняется, проверка TLS остаётся включённой.
+Не используйте `verify=False`.
+[Инструкция GigaChat по сертификатам](https://developers.sber.ru/docs/ru/gigachat/certificates).
+
+## Запуск сервера
+
+macOS / Linux:
+
+```bash
+.venv/bin/python -m app
+```
+
+Windows:
+
+```powershell
+.venv\Scripts\python.exe -m app
+```
+
+Документация и формы запуска: [Swagger UI](http://127.0.0.1:8000/docs).
+
+Проще всего вызывать API через Swagger UI. Примеры ниже — для терминала macOS/Linux;
+в Windows PowerShell используйте `curl.exe` вместо псевдонима `curl` и команды в одну строку.
+
+```bash
+# Проверка доступа к GigaChat
+curl --fail-with-body http://127.0.0.1:8000/models
+
+# Проверочный режим: все уникальные вакансии из файла, без запросов к порталу
+curl --fail-with-body -X POST http://127.0.0.1:8000/analyze \
+  -H 'Content-Type: application/json' \
+  --data-binary '@kantkod_sample_vacancies.json'
+
+# Рабочий режим: загрузить вакансии региона и проанализировать
+curl --fail-with-body -X POST http://127.0.0.1:8000/runs
+
+# Последний успешный отчёт и состояние запуска
+curl --fail-with-body http://127.0.0.1:8000/report
+curl --fail-with-body http://127.0.0.1:8000/runs/status
+```
+
+`/analyze` принимает JSON-тело в исходном формате API:
+`{"status":"200","results":{"vacancies":[{"vacancy":{"id":"...", ...}}]}}`.
+Это не multipart-загрузка. В Swagger можно вставить содержимое JSON целиком.
+HTTP-запуски синхронные: ответ возвращается после полного анализа.
+Долгий запуск можно наблюдать из другого запроса через `/runs/status`.
+
+## Запуск без HTTP-сервера
+
+Используйте Python из `.venv`, в которое установлены зависимости. Активация не требуется.
+
+macOS / Linux:
+
+```bash
+# Проверочный режим; лимит MAX_VACANCIES здесь не применяется
+.venv/bin/python -m app.cli --input "kantkod_sample_vacancies.json" --output reports/sample.json
+
+# Рабочий режим
+.venv/bin/python -m app.cli
+```
+
+Windows (PowerShell или CMD):
+
+```powershell
+.venv\Scripts\python.exe -m app.cli --input "kantkod_sample_vacancies.json" --output reports/sample.json
+.venv\Scripts\python.exe -m app.cli
+```
+
+Ошибка `ModuleNotFoundError: No module named 'apscheduler'` обычно означает запуск
+другим интерпретатором или отсутствие установленных зависимостей. В macOS/Linux
+повторите `.venv/bin/python -m pip install -r requirements.txt` и используйте команды выше;
+в Windows — `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
+
+Оба способа запуска используют один процесс анализа. При ошибке CLI возвращает код 1.
+После первого успешного запуска с реальным ключом `reports/sample.json` будет
+примером отчёта на учебных данных для сдачи. До такого запуска отчёт модели не сгенерирован.
 
 ## Структура
 
@@ -18,6 +143,7 @@
 ```text
 app/
   main.py                # FastAPI, include_router, lifespan, планировщик
+  __main__.py            # прямой запуск: python -m app
   dependencies.py        # зависимости маршрутов через Depends
   config.py              # настройки из окружения / .env
   schemas.py             # Pydantic-схемы входа, замечаний и отчёта
@@ -36,67 +162,13 @@ system_prompt.txt         # исходная инструкция для ана�
 .env.example              # конфигурация, в том числе расписание
 ```
 
-Точки входа: `app/main.py` (HTTP и расписание), `app/cli.py` (однократный запуск).
-Технологии: Python 3.11+, FastAPI, Pydantic Settings, requests, APScheduler 3.
-Локально проверено на Python 3.14.2. Версии проверенного окружения — `requirements-lock.txt`.
-
-## Настройка и запуск
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-lock.txt
-cp .env.example .env
-```
-
-Впишите в `.env` `GIGACHAT_AUTH_KEY`: готовый ключ авторизации из кабинета GigaChat API,
-без `< >` и префикса `Basic`. Это не краткоживущий Access token.
-Ключ не нужно повторно кодировать в Base64. `.env` исключён из Git и Docker-образа.
-Провайдер — GigaChat, модель по умолчанию — `GigaChat-2`; другую доступную модель
-можно выбрать через `GIGACHAT_MODEL` после запроса `/models`.
-
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
-```
-
-Документация и формы запуска: [Swagger UI](http://127.0.0.1:8000/docs).
-
-```bash
-# Проверка доступа к GigaChat
-curl --fail-with-body http://127.0.0.1:8000/models
-
-# Проверочный режим: все уникальные вакансии из файла, без запросов к порталу
-curl --fail-with-body -X POST http://127.0.0.1:8000/analyze \
-  -H 'Content-Type: application/json' \
-  --data-binary '@kantkod_sample_vacancies (1).json'
-
-# Рабочий режим: загрузить вакансии региона и проанализировать
-curl --fail-with-body -X POST http://127.0.0.1:8000/runs
-
-# Последний успешный отчёт и состояние запуска
-curl --fail-with-body http://127.0.0.1:8000/report
-curl --fail-with-body http://127.0.0.1:8000/runs/status
-```
-
-`/analyze` принимает JSON-тело в исходном формате API:
-`{"status":"200","results":{"vacancies":[{"vacancy":{"id":"...", ...}}]}}`.
-Это не multipart-загрузка. В Swagger можно вставить содержимое JSON целиком.
-HTTP-запуски синхронные: ответ возвращается после полного анализа.
-Долгий запуск можно наблюдать из другого запроса через `/runs/status`.
-
-## Запуск без HTTP-сервера
-
-```bash
-# Проверочный режим; лимит MAX_VACANCIES здесь не применяется
-python -m app.cli --input 'kantkod_sample_vacancies (1).json' --output reports/sample.json
-
-# Рабочий режим
-python -m app.cli
-```
-
-Оба способа запуска используют один процесс анализа. При ошибке CLI возвращает код 1.
-После первого успешного запуска с реальным ключом `reports/sample.json` будет
-примером отчёта на учебных данных для сдачи. До такого запуска отчёт модели не сгенерирован.
+Точки входа: `python -m app` (HTTP и расписание), `python -m app.cli` (однократный запуск).
+Технологии: Python 3.11–3.14, FastAPI, Pydantic Settings, requests, APScheduler 3.
+Один `requirements.txt` для macOS, Windows и Linux. Используется обычный Uvicorn
+с `asyncio` и `h11`, без платформенных расширений `uvloop` и `httptools`.
+Зависимость `tzdata` обеспечивает часовые пояса для систем без базы IANA, включая
+Windows ([документация Python](https://docs.python.org/3/library/zoneinfo.html#data-sources)).
+Нативные зависимости Pydantic устанавливаются pip подходящими для платформы пакетами.
 
 ## ИИ и проверка результата
 
@@ -133,15 +205,12 @@ HTTP и CLI по-прежнему принимают исходный вложе
 
 OAuth выполняется через `requests`, с новым UUID4 в `RqUID`. Токен кешируется
 до истечения срока действия; после HTTP 401 обновляется и запрос повторяется один раз.
-HTTP-ошибки, таймауты и неполный ответ модели возвращаются как ошибки сервиса.
-Проверка TLS включена. При ошибке сертификата установите доверенную цепочку PEM
-из официального источника и задайте `GIGACHAT_CA_BUNDLE=/полный/путь/bundle.pem`.
-Для подготовки отдельного файла сертификатов выполните
-`python scripts/setup_certificates.py` и скопируйте выведенную строку в `.env`.
-Скрипт скачивает корневой сертификат с Госуслуг по HTTPS и объединяет его с certifi;
-системное хранилище не меняется. [Инструкция GigaChat по сертификатам](https://developers.sber.ru/docs/ru/gigachat/certificates).
-Для Docker путь должен указывать на файл внутри контейнера с соответствующим volume.
-Не используйте `verify=False`.
+Пустой, обрезанный или неверно устроенный ответ модели, включая некорректный JSON
+успешного HTTP-ответа генерации, пропускается с `logger.warning` и ID вакансии.
+Вакансия получает `issues: []`, обработка следующих продолжается.
+Ошибки HTTP, таймауты и ошибки авторизации остаются ошибками сервиса.
+Проверка TLS включена. Настройка доверенной цепочки описана в начале README,
+в разделе «Подготовка к запуску → Сертификаты GigaChat».
 
 Документация: [авторизация GigaChat](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api),
 [генерация ответа](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat),
@@ -202,46 +271,5 @@ APScheduler запускает рабочий режим ежедневно в 0
 API предназначен для локального запуска; публичный доступ требует отдельной авторизации
 и ограничения запросов, поскольку каждый анализ расходует квоту модели.
 
-Docker (при установленном Docker):
-
-```bash
-docker compose up --build -d
-docker compose logs -f api
-```
-
 Конфигурация автоматизации: `.env.example` и создание job в `app/main.py`.
-Compose перезапускает сервис и сохраняет отчёты в локальной папке `reports/`.
-
-## Проверки
-
-```bash
-pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-Тесты проверяют OAuth и обновление токена, пагинацию, дедупликацию,
-анализ всех 10 учебных вакансий без обращения к порталу, проверку цитат,
-фильтрацию некорректных замечаний и продолжение обработки после неверного JSON,
-предупреждения в логах, сохранность предыдущего отчёта при сбое API, HTTP-маршруты,
-блокировку одновременного запуска и регистрацию расписания.
-Модель и портал в тестах подменены, токены не расходуются.
-
-## Запуск жюри и материалы для сдачи
-
-Используется доступ GigaChat API, указанный командой как бесплатный.
-Для проверки нужен собственный действующий ключ GigaChat API с доступной квотой:
-откройте [личный кабинет](https://developers.sber.ru/studio/), подключите GigaChat API,
-получите ключ авторизации, внесите его в `.env` и выполните CLI-команду с `--input` выше.
-Наличие бесплатной квоты зависит от аккаунта; веб-чат GigaChat не заменяет API-ключ.
-Ключи команды нельзя публиковать в Git. Доступ без регистрации/ключа не реализован.
-
-Перед сдачей команда должна:
-
-1. Проверить реальный запуск GigaChat и сохранить учебный отчёт командой с `--output reports/sample.json`.
-2. Добавить этот отчёт в репозиторий отдельно: `git add -f reports/sample.json`.
-3. Заполнить вклад участников ниже.
-4. Разместить код в публичном Git-репозитории и указать SHA сдаваемого коммита.
-5. Записать видео до 3 минут с загрузкой данных, вызовом ИИ и отчётом; дать ссылку без запроса доступа.
-
-Вклад участников: заполняется командой перед сдачей. Видео и ссылка на репозиторий
-добавляются командой. Дополнительный сценарий не реализован, основной отчёт реализован.
+Для запусков по расписанию оставляйте терминал с сервером открытым и компьютер включённым.

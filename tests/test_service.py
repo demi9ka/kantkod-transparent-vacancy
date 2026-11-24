@@ -71,7 +71,7 @@ def test_analyzer_keeps_valid_issues_and_logs_invalid_ones(caplog):
 
 
 @pytest.mark.parametrize("content", [
-    'not-json', '{"issues":', '[]', 'null', '{"issues":null}', '{}',
+    'not-json', '{"issues":', '[]', 'null', '{"issues":null}', '{}', None, 123,
     '{"issues":[],"extra":true}', '{"issues": [{"bad": true}]}',
 ])
 def test_bad_model_output_logged_and_skipped(content, caplog):
@@ -110,6 +110,51 @@ def test_validation_errors_do_not_stop_report_processing(config, caplog):
     assert service.status()["state"] == "success"
     assert service.store.read() == report
     assert client.complete.call_count == 3
+
+
+@pytest.mark.parametrize("bad_response", [
+    [], {}, {"choices": None}, {"choices": []}, {"choices": [None]},
+    {"choices": [{}]}, {"choices": [{"message": None}]},
+    {"choices": [{"message": {"content": None}}]},
+    {"choices": [{"message": {"content": 123}}]},
+    {"choices": [{"message": {"content": ""}}]},
+    {"choices": [{"finish_reason": "length", "message": {"content": '{"issues":'}}]},
+])
+def test_invalid_gigachat_response_does_not_stop_report(config, caplog, bad_response):
+    import time
+    from app.services.gigachat import GigaChatClient
+
+    client = GigaChatClient(config)
+    client._token = "test-token"
+    client._expires_at = time.time() + 1800
+    client.session = Mock()
+    first, second = Mock(ok=True), Mock(ok=True)
+    first.json.return_value = bad_response
+    second.json.return_value = {"choices": [{
+        "finish_reason": "stop",
+        "message": {"content": json.dumps({"issues": [issue()]})},
+    }]}
+    client.session.request.side_effect = [first, second]
+    service = ReportService(config, Mock(), VacancyAnalyzer(client, "prompt"), ReportStore(config.report_path))
+    report = service.run(payload({"id": "BROKEN"}, {"id": "NEXT", "schedule": "Гибкий график"}))
+    assert [len(v.issues) for v in report.vacancies] == [0, 1]
+    assert service.status()["state"] == "success"
+    assert service.store.read() == report
+    assert "BROKEN" in caplog.text and "WARNING" in caplog.text
+
+
+@pytest.mark.parametrize("bad_issue", [
+    None, 123, [], {"type": "invalid"}, issue(source_field=["schedule"]),
+    issue(quote=None), issue(problem=None), issue(second_quote="Лишнее поле"),
+])
+def test_any_invalid_issue_is_skipped_individually(bad_issue, caplog):
+    result = validate_analysis(
+        json.dumps({"issues": [bad_issue, issue()]}),
+        {"id": "MIXED", "schedule": "Гибкий график"},
+    )
+    assert len(result.issues) == 1
+    assert result.issues[0].quote == "Гибкий график"
+    assert "MIXED" in caplog.text and "замечание #1" in caplog.text
 
 
 def test_new_prompt_receives_flat_fields_and_original_text():
@@ -210,7 +255,7 @@ def test_api_local_mode_analyzes_all_sample_vacancies(config):
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/report").status_code == 404
-        data = json.loads((ROOT / "kantkod_sample_vacancies (1).json").read_text())
+        data = json.loads((ROOT / "kantkod_sample_vacancies.json").read_text(encoding="utf-8"))
         result = client.post("/analyze", json=data)
         assert result.status_code == 200
         assert result.json()["total"] == 10
