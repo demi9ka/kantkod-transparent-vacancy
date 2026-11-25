@@ -27,6 +27,7 @@ def main() -> int:
         service, client = build_service(config)
         report = service.run(payload, source_label=args.input.name if args.input else "local-json")
         print(f"Обработано вакансий: {report.total}. Отчёт: {config.report_path}")
+        print("Статусы: " + ", ".join(f"{status}={sum(v.status == status for v in report.vacancies)}" for status in ("ok", "partial", "error")))
         return 0
     except (ServiceError, OSError, ValidationError) as exc:
         message = "Некорректная конфигурация или формат входного JSON" if isinstance(exc, ValidationError) else str(exc)

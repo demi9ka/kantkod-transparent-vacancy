@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     report_path: Path = ROOT / "reports/latest.json"
     prompt_path: Path = ROOT / "system_prompt.txt"
     log_file: Path = ROOT / "logs/app.log"
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "DEBUG"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_console_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     @model_validator(mode="after")

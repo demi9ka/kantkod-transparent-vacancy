@@ -44,7 +44,7 @@ class Issue(BaseModel):
         return self
 
 
-MAX_ISSUES = 4
+MAX_ISSUES = 6
 
 
 class Analysis(BaseModel):
@@ -52,10 +52,16 @@ class Analysis(BaseModel):
     issues: list[Issue] = Field(max_length=MAX_ISSUES)
 
 
-class VacancyReport(BaseModel):
+class AnalysisResult(Analysis):
+    status: Literal["ok", "partial", "error"] = "ok"
+    dropped_count: int = Field(default=0, ge=0)
+    dropped_reasons: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class VacancyReport(AnalysisResult):
     id: str
     url: str | None = None
-    issues: list[Issue]
 
 
 class Report(BaseModel):

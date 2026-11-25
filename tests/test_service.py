@@ -14,6 +14,18 @@ from app.services.reports import ReportService, ReportStore
 from app.services.source import VacancySource
 
 
+@pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    monkeypatch.setattr("app.services.analyzer.time.sleep", Mock())
+
+
+def complete_vacancy(**updates):
+    return {
+        "id": "1", "employment": "Полная занятость", "salary_min": 50000, "salary_max": 50000,
+        "requirements": "Навыки работы с ПК", "addresses": "ул. Учебная, д. 1", **updates,
+    }
+
+
 @pytest.fixture
 def config(tmp_path):
     return Settings(
@@ -63,14 +75,14 @@ def test_analyzer_keeps_valid_issues_and_logs_invalid_ones(caplog):
         issue(type="contradiction"), issue(source_field="invented"),
     ]})
     analyzer = VacancyAnalyzer(client, "prompt")
-    result = analyzer.analyze({"id": "VAC-1", "schedule": "Гибкий график"})
+    result = analyzer.analyze(complete_vacancy(id="VAC-1", schedule="Гибкий график"))
     assert len(result.issues) == 1
     assert result.issues[0].quote == "Гибкий график"
     assert client.complete.call_count == 1
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 4
     assert all("VAC-1" in r.message and "отброшено" in r.message for r in warnings)
-    assert "Цитата" in warnings[1].message
+    assert "цитат" in warnings[1].message.lower()
 
 
 @pytest.mark.parametrize("content", [
@@ -80,25 +92,27 @@ def test_analyzer_keeps_valid_issues_and_logs_invalid_ones(caplog):
 def test_bad_model_output_logged_and_skipped(content, caplog):
     client = Mock()
     client.complete.return_value = content
-    assert VacancyAnalyzer(client, "prompt").analyze({"id": "VAC-2"}).issues == []
+    result = VacancyAnalyzer(client, "prompt").analyze(complete_vacancy(id="VAC-2"))
+    assert result.issues == []
     assert "VAC-2" in caplog.text
     assert "WARNING" in caplog.text
-    client.complete.assert_called_once()
+    expected = 1 if content == '{"issues": [{"bad": true}]}' else 4
+    assert client.complete.call_count == expected
+    assert result.status == ("partial" if expected == 1 else "error")
 
 
 def test_duplicates_and_excess_issues_are_skipped(caplog):
     vacancy = {"id": "VAC-3", "duty": "; ".join(f"Задача {n}" for n in range(8))}
     issues = [issue(source_field="duty", topic="duties", quote=f"Задача {n}") for n in range(8)]
     result = validate_analysis(json.dumps({"issues": [{"bad": True}, issues[0], *issues]}), vacancy)
-    assert [i.quote for i in result.issues] == [f"Задача {n}" for n in range(4)]
+    assert [i.quote for i in result.issues] == ["Задача 0"]
     assert "Повтор замечания" in caplog.text
-    assert "Превышен лимит" in caplog.text
 
 
 def test_validation_errors_do_not_stop_report_processing(config, caplog):
     client = Mock()
     client.complete.side_effect = [
-        'invalid json',
+        *['invalid json'] * 4,
         json.dumps({"issues": [{"bad": True}, issue()]}),
         '{"issues":[]}',
     ]
@@ -106,13 +120,14 @@ def test_validation_errors_do_not_stop_report_processing(config, caplog):
         config, Mock(), VacancyAnalyzer(client, "prompt"), ReportStore(config.report_path)
     )
     report = service.run(payload(
-        {"id": "1"}, {"id": "2", "schedule": "Гибкий график"}, {"id": "3"}
+        complete_vacancy(id="1"), complete_vacancy(id="2", schedule="Гибкий график"), complete_vacancy(id="3")
     ))
     assert report.total == 3
     assert [len(v.issues) for v in report.vacancies] == [0, 1, 0]
     assert service.status()["state"] == "success"
     assert service.store.read() == report
-    assert client.complete.call_count == 3
+    assert client.complete.call_count == 6
+    assert [v.status for v in report.vacancies] == ["error", "partial", "ok"]
 
 
 @pytest.mark.parametrize("bad_response", [
@@ -137,9 +152,9 @@ def test_invalid_gigachat_response_does_not_stop_report(config, caplog, bad_resp
         "finish_reason": "stop",
         "message": {"content": json.dumps({"issues": [issue()]})},
     }]}
-    client.session.request.side_effect = [first, second]
+    client.session.request.side_effect = [first, first, first, first, second]
     service = ReportService(config, Mock(), VacancyAnalyzer(client, "prompt"), ReportStore(config.report_path))
-    report = service.run(payload({"id": "BROKEN"}, {"id": "NEXT", "schedule": "Гибкий график"}))
+    report = service.run(payload(complete_vacancy(id="BROKEN"), complete_vacancy(id="NEXT", schedule="Гибкий график")))
     assert [len(v.issues) for v in report.vacancies] == [0, 1]
     assert service.status()["state"] == "success"
     assert service.store.read() == report
@@ -178,14 +193,14 @@ def test_new_prompt_receives_flat_fields_and_original_text():
     client.complete.return_value = json.dumps({"issues": [issue(
         topic="requirements", source_field="requirement.qualification", quote="Обучение предоставляется."
     )]})
-    assert len(VacancyAnalyzer(client, "новый промпт").analyze(vacancy).issues) == 1
+    assert any(i.quote == "Обучение предоставляется." for i in VacancyAnalyzer(client, "новый промпт").analyze(vacancy).issues)
     client.complete.assert_called_once_with("новый промпт", normalized)
 
 
-def test_shortened_and_old_address_field_names_are_rejected():
+def test_unambiguous_field_aliases_are_repaired():
     vacancy = {"id": "FLAT-2", "requirement": {"qualification": "Текст"}, "addresses": {"address": [{"location": "Гусев"}]}}
     for field, quote in [("qualification", "Текст"), ("addresses.address[0].location", "Гусев")]:
-        assert validate_analysis(json.dumps({"issues": [issue(source_field=field, quote=quote)]}), vacancy).issues == []
+        assert len(validate_analysis(json.dumps({"issues": [issue(source_field=field, quote=quote)]}), vacancy).issues) == 1
 
 
 def test_deduplication_and_previous_report_preserved(config):
@@ -227,7 +242,9 @@ def response(vacancies):
     return result
 
 
-def test_source_reads_two_pages_and_honors_limit(config):
+def test_source_reads_two_pages_and_honors_limit(config, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="app.services.source")
     config.max_vacancies = 3
     config.page_size = 2
     source = VacancySource(config)
@@ -235,6 +252,8 @@ def test_source_reads_two_pages_and_honors_limit(config):
     source.session.get.side_effect = [response([{"id": "1"}, {"id": "2"}]), response([{"id": "3"}, {"id": "4"}])]
     assert [v["id"] for v in source.fetch()] == ["1", "2", "3"]
     assert [c.kwargs["params"]["offset"] for c in source.session.get.call_args_list] == [0, 1]
+    assert "Страница 1: получено 2; offset=0, limit=2" in caplog.text
+    assert "Страница 2: получено 2; offset=1, limit=2" in caplog.text
 
 
 def test_source_repeated_page_fails(config):

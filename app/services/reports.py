@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import os
 import tempfile
 import threading
@@ -66,6 +67,8 @@ class ReportService:
             raise ServiceError("Другой анализ уже выполняется", status_code=409)
         self._update(state="running", started_at=datetime.now(timezone.utc), finished_at=None, processed=0, error=None)
         logger.info("Начат запуск анализа: источник=%s", self.settings.source_url if payload is None else source_label)
+        if isinstance(getattr(self.analyzer, "prompt", None), str):
+            logger.info("SHA256 системного промпта: %s", hashlib.sha256(self.analyzer.prompt.encode("utf-8")).hexdigest())
         try:
             vacancies = self.source.fetch() if payload is None else extract_vacancies(payload)
             # Одна запись на ID. При повторе внутри входа используется последняя версия.
@@ -78,7 +81,7 @@ class ReportService:
                 results.append(VacancyReport(
                     id=identifier,
                     url=url if isinstance(url, str) and url.startswith(("https://", "http://")) else None,
-                    issues=analysis.issues,
+                    **analysis.model_dump(),
                 ))
                 self._update(processed=len(results))
             report = Report(
@@ -88,10 +91,13 @@ class ReportService:
                 total=len(results),
                 vacancies=results,
             )
-            # Перезаписываем текущий отчёт только после полного успешного анализа.
+            # Атомарно сохраняем полный обход, включая явные статусы partial/error.
             self.store.save(report)
             self._update(state="success", finished_at=datetime.now(timezone.utc))
-            logger.info("Запуск завершён: вакансий=%s, отчёт=%s", report.total, self.store.path)
+            logger.info(
+                "Запуск завершён: вакансий=%s; ok=%s, partial=%s, error=%s; отчёт=%s",
+                report.total, *(sum(v.status == status for v in results) for status in ("ok", "partial", "error")), self.store.path,
+            )
             return report
         except ServiceError as exc:
             logger.error("Запуск завершился ошибкой: %s", exc)

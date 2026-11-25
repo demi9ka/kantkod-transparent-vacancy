@@ -70,3 +70,20 @@ def test_invalid_completion_json_is_distinct_from_transport_error():
         client.complete("prompt", {"id": "1"})
     assert not isinstance(error.value, ModelResponseError)
     assert "403" in str(error.value)
+
+
+def test_targeted_repair_schema_and_finish_reason(caplog):
+    import json
+    import logging
+    client = GigaChatClient(Settings(_env_file=None))
+    client._request = Mock(return_value={"choices": [{"finish_reason": "stop", "message": {"content": '{"issues":[]}'}}]})
+    with caplog.at_level(logging.INFO, logger="app.services.gigachat"):
+        client.repair_issue("prompt", {"schedule": "Гибкий график"}, {"quote": ""}, "Нужна цитата")
+    payload = client._request.call_args.kwargs["json"]
+    schema = payload["response_format"]["schema"]["properties"]["issues"]
+    assert schema["minItems"] == 0 and schema["maxItems"] == 1
+    body = json.loads(payload["messages"][1]["content"])
+    assert body["issue"] == {"quote": ""}
+    assert body["validation_error"] == "Нужна цитата"
+    assert body["vacancy"]["schedule"] == "Гибкий график"
+    assert "finish_reason='stop'" in caplog.text

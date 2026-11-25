@@ -41,6 +41,8 @@ def test_file_contains_source_answer_and_mismatch(log_settings, capsys):
     }]}, ensure_ascii=False)
     result = VacancyAnalyzer(client, "Тестовый промпт").analyze({
         "id": "LOG-1", "schedule": "Гибкий график", "requirement": {"experience": 0},
+        "employment": "Полная занятость", "salary_min": 50000, "salary_max": 50000,
+        "requirements": "Навыки работы с ПК", "addresses": "ул. Учебная, д. 1",
     })
     assert result.issues == []
     log = log_settings.log_file.read_text(encoding="utf-8")

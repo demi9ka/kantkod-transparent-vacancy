@@ -1,4 +1,5 @@
 from typing import Any
+import logging
 
 import requests
 from pydantic import ValidationError
@@ -8,6 +9,8 @@ from urllib3.util.retry import Retry
 from app.config import Settings
 from app.errors import ServiceError
 from app.schemas import SourceResponse
+
+logger = logging.getLogger(__name__)
 
 
 def extract_vacancies(data: SourceResponse) -> list[dict[str, Any]]:
@@ -51,6 +54,7 @@ class VacancySource:
             except (requests.RequestException, ValueError, ValidationError) as exc:
                 raise ServiceError("Не удалось загрузить вакансии с портала «Работа в России»") from exc
             page = extract_vacancies(data)
+            logger.info("Страница %s: получено %s; offset=%s, limit=%s", offset + 1, len(page), offset, page_size)
             if not page:
                 break
             new_ids = {str(item["id"]) for item in page} - vacancies.keys()
